@@ -1,0 +1,59 @@
+/* Form layout keeps the login surface compact and easy to scan. */
+.form {
+  display: grid;
+  gap: 16px;
+}
+
+/* Labels group visible names with their associated controls. */
+.field {
+  display: grid;
+  gap: 7px;
+  color: #334155;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+/* Inputs have a visible focus state for keyboard and mouse users. */
+.field input {
+  min-height: 44px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0 12px;
+  outline: 0;
+  color: #1f2937;
+  font-weight: 400;
+}
+
+.field input:focus {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 3px rgb(20 184 166 / 16%);
+}
+
+/* Inline errors remain next to the form and are announced by role=alert. */
+.error {
+  margin: -4px 0 0;
+  color: #b91c1c;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+/* The primary action has a clear hover and loading/disabled state. */
+.submit {
+  min-height: 46px;
+  border: 0;
+  border-radius: 8px;
+  background: #111827;
+  color: #ffffff;
+  font-weight: 800;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.submit:hover:not(:disabled) {
+  background: #0f766e;
+  transform: translateY(-1px);
+}
+
+.submit:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
