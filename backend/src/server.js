@@ -80,6 +80,7 @@ async function initializeDatabase() {
   `);
   await pool.query("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS employee_number TEXT");
   await pool.query("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS workstation_number TEXT");
+  await pool.query("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)");
   const { rows } = await pool.query("SELECT COUNT(*)::int AS count FROM tickets");
   if (rows[0].count === 0) for (const ticket of seedTickets) await pool.query(`INSERT INTO tickets (title, description, status, priority, category, requester, employee_number, workstation_number, assigned_to, due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [ticket.title, ticket.description, ticket.status, ticket.priority, ticket.category, ticket.requester, ticket.employee_number, ticket.workstation_number, ticket.assigned_to, ticket.due_at]);
   await seedAgentDemo(pool);
@@ -189,7 +190,7 @@ app.post("/api/tickets", requireAuth, requireCsrf, async (request, response, nex
   try {
     const { title, description, priority = "Medium", category = "General", requester = "Self Service User", employeeNumber = "", workstationNumber = "" } = request.body;
     if (!title || !description || !employeeNumber || !workstationNumber) return response.status(400).json({ message: "Title, description, employee number, and workstation number are required." });
-    const { rows } = await pool.query(`INSERT INTO tickets (title, description, status, priority, category, requester, employee_number, workstation_number, assigned_to, due_at) VALUES ($1,$2,'New',$3,$4,$5,$6,$7,'Unassigned',NOW()+INTERVAL '2 days') RETURNING *`, [title, description, priority, category, requester, employeeNumber, workstationNumber]);
+    const { rows } = await pool.query(`INSERT INTO tickets (title, description, status, priority, category, requester, employee_number, workstation_number, assigned_to, due_at, created_by) VALUES ($1,$2,'New',$3,$4,$5,$6,$7,'Unassigned',NOW()+INTERVAL '2 days',$8) RETURNING *`, [title, description, priority, category, requester, employeeNumber, workstationNumber, request.user.id]);
     response.status(201).json(mapTicket(rows[0]));
   } catch (error) { next(error); }
 });
