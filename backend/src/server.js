@@ -105,6 +105,11 @@ function requireAuth(request, response, next) {
   next();
 }
 
+function requireTech(request, response, next) {
+  if (request.user.role !== "tech") return response.status(403).json({ message: "Staff access only." });
+  next();
+}
+
 function validateCredentials(request, response) {
   const email = String(request.body.email || "").trim().toLowerCase();
   const password = String(request.body.password || "");
@@ -185,8 +190,14 @@ app.post("/api/auth/reset", requireCsrf, async (request, response, next) => {
 app.get("/api/auth/me", requireAuth, (request, response) => response.json({ user: request.user }));
 app.post("/api/auth/signout", requireAuth, requireCsrf, (request, response, next) => request.session.destroy((error) => { if (error) return next(error); response.clearCookie("connect.sid"); response.json({ ok: true }); }));
 
-app.get("/api/tickets", requireAuth, async (_request, response, next) => { try { const { rows } = await pool.query("SELECT * FROM tickets ORDER BY updated_at DESC, id DESC"); response.json(rows.map(mapTicket)); } catch (error) { next(error); } });
-app.post("/api/tickets", requireAuth, requireCsrf, async (request, response, next) => {
+app.get("/api/tickets", requireAuth, async (request, response, next) => {
+  try {
+    const { rows } = request.user.role === "tech"
+      ? await pool.query("SELECT * FROM tickets ORDER BY updated_at DESC, id DESC")
+      : await pool.query("SELECT * FROM tickets WHERE created_by = $1 ORDER BY updated_at DESC, id DESC", [request.user.id]);
+    response.json(rows.map(mapTicket));
+  } catch (error) { next(error); }
+});app.post("/api/tickets", requireAuth, requireCsrf, async (request, response, next) => {
   try {
     const { title, description, priority = "Medium", category = "General", requester = "Self Service User", employeeNumber = "", workstationNumber = "" } = request.body;
     if (!title || !description || !employeeNumber || !workstationNumber) return response.status(400).json({ message: "Title, description, employee number, and workstation number are required." });
@@ -194,7 +205,7 @@ app.post("/api/tickets", requireAuth, requireCsrf, async (request, response, nex
     response.status(201).json(mapTicket(rows[0]));
   } catch (error) { next(error); }
 });
-app.patch("/api/tickets/:id", requireAuth, requireCsrf, async (request, response, next) => {
+app.patch("/api/tickets/:id", requireAuth, requireTech, requireCsrf, async (request, response, next) => {
   try {
     const fields = []; const values = [];
     for (const key of ["status", "priority", "assignedTo"]) if (request.body[key] !== undefined) { fields.push(`${key === "assignedTo" ? "assigned_to" : key} = $${values.length + 1}`); values.push(request.body[key]); }
@@ -221,7 +232,7 @@ app.post("/api/tickets/:id/comments", requireAuth, requireCsrf, async (request, 
   } catch (error) { next(error); }
 });
 const agentLimiter = rateLimit({ windowMs: 60 * 1000, max: 10 });
-app.post("/api/tickets/:id/agent", requireAuth, requireCsrf, agentLimiter, async (request, response, next) => {
+app.post("/api/tickets/:id/agent", requireAuth, requireTech, requireCsrf, agentLimiter, async (request, response, next) => {
   try {
     const result = await runAgent(pool, Number(request.params.id));
     if (!result) return response.status(404).json({ message: "Ticket not found." });
