@@ -110,6 +110,12 @@ function requireTech(request, response, next) {
   next();
 }
 
+async function canAccessTicket(user, ticketId) {
+  const { rows } = await pool.query("SELECT created_by FROM tickets WHERE id = $1", [ticketId]);
+  if (!rows[0]) return false;
+  return user.role === "tech" || rows[0].created_by === user.id;
+}
+
 function validateCredentials(request, response) {
   const email = String(request.body.email || "").trim().toLowerCase();
   const password = String(request.body.password || "");
@@ -216,12 +222,14 @@ app.patch("/api/tickets/:id", requireAuth, requireTech, requireCsrf, async (requ
 });
 app.get("/api/tickets/:id/comments", requireAuth, async (request, response, next) => {
   try {
+    if (!(await canAccessTicket(request.user, Number(request.params.id)))) return response.status(404).json({ message: "Ticket not found." });
     const { rows } = await pool.query("SELECT * FROM ticket_comments WHERE ticket_id = $1 ORDER BY created_at ASC, id ASC", [request.params.id]);
     response.json(rows.map(mapComment));
   } catch (error) { next(error); }
 });
 app.post("/api/tickets/:id/comments", requireAuth, requireCsrf, async (request, response, next) => {
   try {
+    if (!(await canAccessTicket(request.user, Number(request.params.id)))) return response.status(404).json({ message: "Ticket not found." });
     const body = String(request.body.body || "").trim();
     if (!body) return response.status(400).json({ message: "Comment text is required." });
     if (body.length > 2000) return response.status(400).json({ message: "Comments must be 2,000 characters or fewer." });
