@@ -7,7 +7,7 @@ import session from "express-session";
 import helmet from "helmet";
 import pg from "pg";
 import connectPgSimple from "connect-pg-simple";
-import { runAgent, seedAgentDemo } from "./agent.js";
+import { runAgent, runChat, cleanChat, seedAgentDemo } from "./agent.js";
 
 const { Pool } = pg;
 const PgSession = connectPgSimple(session);
@@ -246,6 +246,13 @@ app.post("/api/tickets/:id/agent", requireAuth, requireTech, requireCsrf, agentL
     if (!result) return response.status(404).json({ message: "Ticket not found." });
     response.json(result);
   } catch (error) { console.error(error); response.status(502).json({ message: "The agent could not answer." }); }
+});
+const chatLimiter = rateLimit({ windowMs: 60 * 1000, max: 15 });
+app.post("/api/chat", requireAuth, requireCsrf, chatLimiter, async (request, response) => {
+  const history = cleanChat(request.body.messages);
+  if (!history) return response.status(400).json({ message: "Send alternating user and assistant messages, ending with a user message." });
+  try { response.json(await runChat(pool, request.user, history)); }
+  catch (error) { console.error(error); response.status(502).json({ message: "The assistant could not answer." }); }
 });
 app.get("/api/metrics", requireAuth, async (_request, response, next) => { try { const { rows } = await pool.query("SELECT status, priority, assigned_to FROM tickets"); response.json({ total: rows.length, open: rows.filter((ticket) => ticket.status !== "Resolved").length, urgent: rows.filter((ticket) => ticket.priority === "Critical").length, assigned: rows.filter((ticket) => ticket.assigned_to !== "Unassigned").length, resolved: rows.filter((ticket) => ticket.status === "Resolved").length }); } catch (error) { next(error); } });
 
