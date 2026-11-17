@@ -99,10 +99,15 @@ function requireCsrf(request, response, next) {
   next();
 }
 
-function requireAuth(request, response, next) {
+async function requireAuth(request, response, next) {
   if (!request.session.user) return response.status(401).json({ message: "Please sign in to continue." });
-  request.user = request.session.user;
-  next();
+  try {
+    const { rows } = await pool.query("SELECT id, email, role FROM users WHERE id = $1", [request.session.user.id]);
+    if (!rows[0]) return response.status(401).json({ message: "Please sign in to continue." });
+    request.session.user = publicUser(rows[0]);
+    request.user = request.session.user;
+    next();
+  } catch (error) { next(error); }
 }
 
 function requireTech(request, response, next) {
@@ -254,7 +259,32 @@ app.post("/api/chat", requireAuth, requireCsrf, chatLimiter, async (request, res
   try { response.json(await runChat(pool, request.user, history)); }
   catch (error) { console.error(error); response.status(502).json({ message: "The assistant could not answer." }); }
 });
-app.get("/api/metrics", requireAuth, async (_request, response, next) => { try { const { rows } = await pool.query("SELECT status, priority, assigned_to FROM tickets"); response.json({ total: rows.length, open: rows.filter((ticket) => ticket.status !== "Resolved").length, urgent: rows.filter((ticket) => ticket.priority === "Critical").length, assigned: rows.filter((ticket) => ticket.assigned_to !== "Unassigned").length, resolved: rows.filter((ticket) => ticket.status === "Resolved").length }); } catch (error) { next(error); } });
+app.get("/api/users", requireAuth, requireTech, async (_request, response, next) => {
+  try {
+    const { rows } = await pool.query("SELECT id, email, role, created_at FROM users ORDER BY id");
+    response.json(rows.map((r) => ({ id: r.id, email: r.email, role: r.role, createdAt: r.created_at })));
+  } catch (error) { next(error); }
+});
+
+app.patch("/api/users/:id/role", requireAuth, requireTech, requireCsrf, async (request, response, next) => {
+  try {
+    const id = Number(request.params.id);
+    const role = request.body.role;
+    if (!Number.isInteger(id) || !["employee", "tech"].includes(role)) return response.status(400).json({ message: "Choose employee or tech." });
+    if (id === request.user.id) return response.status(400).json({ message: "You can't change your own role." });
+    const { rows } = await pool.query("UPDATE users SET role = $1 WHERE id = $2 RETURNING id, email, role", [role, id]);
+    if (!rows[0]) return response.status(404).json({ message: "User not found." });
+    response.json(rows[0]);
+  } catch (error) { next(error); }
+});
+app.get("/api/metrics", requireAuth, async (request, response, next) => {
+  try {
+    const { rows } = request.user.role === "tech"
+      ? await pool.query("SELECT status, priority, assigned_to FROM tickets")
+      : await pool.query("SELECT status, priority, assigned_to FROM tickets WHERE created_by = $1", [request.user.id]);
+    response.json({ total: rows.length, open: rows.filter((t) => t.status !== "Resolved").length, urgent: rows.filter((t) => t.priority === "Critical").length, assigned: rows.filter((t) => t.assigned_to !== "Unassigned").length, resolved: rows.filter((t) => t.status === "Resolved").length });
+  } catch (error) { next(error); }
+});
 
 app.use((error, _request, response, _next) => { console.error(error); response.status(500).json({ message: "Something went wrong." }); });
 await initializeDatabase();
