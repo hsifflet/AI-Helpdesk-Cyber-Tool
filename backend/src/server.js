@@ -7,7 +7,7 @@ import session from "express-session";
 import helmet from "helmet";
 import pg from "pg";
 import connectPgSimple from "connect-pg-simple";
-import { runAgent, seedAgentDemo } from "./agent.js";
+import { runAgent, runChat, cleanChat, seedAgentDemo } from "./agent.js";
 
 const { Pool } = pg;
 const PgSession = connectPgSimple(session);
@@ -80,6 +80,7 @@ async function initializeDatabase() {
   `);
   await pool.query("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS employee_number TEXT");
   await pool.query("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS workstation_number TEXT");
+  await pool.query("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)");
   const { rows } = await pool.query("SELECT COUNT(*)::int AS count FROM tickets");
   if (rows[0].count === 0) for (const ticket of seedTickets) await pool.query(`INSERT INTO tickets (title, description, status, priority, category, requester, employee_number, workstation_number, assigned_to, due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [ticket.title, ticket.description, ticket.status, ticket.priority, ticket.category, ticket.requester, ticket.employee_number, ticket.workstation_number, ticket.assigned_to, ticket.due_at]);
   await seedAgentDemo(pool);
@@ -98,10 +99,26 @@ function requireCsrf(request, response, next) {
   next();
 }
 
-function requireAuth(request, response, next) {
+async function requireAuth(request, response, next) {
   if (!request.session.user) return response.status(401).json({ message: "Please sign in to continue." });
-  request.user = request.session.user;
+  try {
+    const { rows } = await pool.query("SELECT id, email, role FROM users WHERE id = $1", [request.session.user.id]);
+    if (!rows[0]) return response.status(401).json({ message: "Please sign in to continue." });
+    request.session.user = publicUser(rows[0]);
+    request.user = request.session.user;
+    next();
+  } catch (error) { next(error); }
+}
+
+function requireTech(request, response, next) {
+  if (request.user.role !== "tech") return response.status(403).json({ message: "Staff access only." });
   next();
+}
+
+async function canAccessTicket(user, ticketId) {
+  const { rows } = await pool.query("SELECT created_by FROM tickets WHERE id = $1", [ticketId]);
+  if (!rows[0]) return false;
+  return user.role === "tech" || rows[0].created_by === user.id;
 }
 
 function validateCredentials(request, response) {
@@ -184,16 +201,22 @@ app.post("/api/auth/reset", requireCsrf, async (request, response, next) => {
 app.get("/api/auth/me", requireAuth, (request, response) => response.json({ user: request.user }));
 app.post("/api/auth/signout", requireAuth, requireCsrf, (request, response, next) => request.session.destroy((error) => { if (error) return next(error); response.clearCookie("connect.sid"); response.json({ ok: true }); }));
 
-app.get("/api/tickets", requireAuth, async (_request, response, next) => { try { const { rows } = await pool.query("SELECT * FROM tickets ORDER BY updated_at DESC, id DESC"); response.json(rows.map(mapTicket)); } catch (error) { next(error); } });
-app.post("/api/tickets", requireAuth, requireCsrf, async (request, response, next) => {
+app.get("/api/tickets", requireAuth, async (request, response, next) => {
+  try {
+    const { rows } = request.user.role === "tech"
+      ? await pool.query("SELECT * FROM tickets ORDER BY updated_at DESC, id DESC")
+      : await pool.query("SELECT * FROM tickets WHERE created_by = $1 ORDER BY updated_at DESC, id DESC", [request.user.id]);
+    response.json(rows.map(mapTicket));
+  } catch (error) { next(error); }
+});app.post("/api/tickets", requireAuth, requireCsrf, async (request, response, next) => {
   try {
     const { title, description, priority = "Medium", category = "General", requester = "Self Service User", employeeNumber = "", workstationNumber = "" } = request.body;
     if (!title || !description || !employeeNumber || !workstationNumber) return response.status(400).json({ message: "Title, description, employee number, and workstation number are required." });
-    const { rows } = await pool.query(`INSERT INTO tickets (title, description, status, priority, category, requester, employee_number, workstation_number, assigned_to, due_at) VALUES ($1,$2,'New',$3,$4,$5,$6,$7,'Unassigned',NOW()+INTERVAL '2 days') RETURNING *`, [title, description, priority, category, requester, employeeNumber, workstationNumber]);
+    const { rows } = await pool.query(`INSERT INTO tickets (title, description, status, priority, category, requester, employee_number, workstation_number, assigned_to, due_at, created_by) VALUES ($1,$2,'New',$3,$4,$5,$6,$7,'Unassigned',NOW()+INTERVAL '2 days',$8) RETURNING *`, [title, description, priority, category, requester, employeeNumber, workstationNumber, request.user.id]);
     response.status(201).json(mapTicket(rows[0]));
   } catch (error) { next(error); }
 });
-app.patch("/api/tickets/:id", requireAuth, requireCsrf, async (request, response, next) => {
+app.patch("/api/tickets/:id", requireAuth, requireTech, requireCsrf, async (request, response, next) => {
   try {
     const fields = []; const values = [];
     for (const key of ["status", "priority", "assignedTo"]) if (request.body[key] !== undefined) { fields.push(`${key === "assignedTo" ? "assigned_to" : key} = $${values.length + 1}`); values.push(request.body[key]); }
@@ -204,12 +227,14 @@ app.patch("/api/tickets/:id", requireAuth, requireCsrf, async (request, response
 });
 app.get("/api/tickets/:id/comments", requireAuth, async (request, response, next) => {
   try {
+    if (!(await canAccessTicket(request.user, Number(request.params.id)))) return response.status(404).json({ message: "Ticket not found." });
     const { rows } = await pool.query("SELECT * FROM ticket_comments WHERE ticket_id = $1 ORDER BY created_at ASC, id ASC", [request.params.id]);
     response.json(rows.map(mapComment));
   } catch (error) { next(error); }
 });
 app.post("/api/tickets/:id/comments", requireAuth, requireCsrf, async (request, response, next) => {
   try {
+    if (!(await canAccessTicket(request.user, Number(request.params.id)))) return response.status(404).json({ message: "Ticket not found." });
     const body = String(request.body.body || "").trim();
     if (!body) return response.status(400).json({ message: "Comment text is required." });
     if (body.length > 2000) return response.status(400).json({ message: "Comments must be 2,000 characters or fewer." });
@@ -220,14 +245,46 @@ app.post("/api/tickets/:id/comments", requireAuth, requireCsrf, async (request, 
   } catch (error) { next(error); }
 });
 const agentLimiter = rateLimit({ windowMs: 60 * 1000, max: 10 });
-app.post("/api/tickets/:id/agent", requireAuth, requireCsrf, agentLimiter, async (request, response, next) => {
+app.post("/api/tickets/:id/agent", requireAuth, requireTech, requireCsrf, agentLimiter, async (request, response, next) => {
   try {
     const result = await runAgent(pool, Number(request.params.id));
     if (!result) return response.status(404).json({ message: "Ticket not found." });
     response.json(result);
   } catch (error) { console.error(error); response.status(502).json({ message: "The agent could not answer." }); }
 });
-app.get("/api/metrics", requireAuth, async (_request, response, next) => { try { const { rows } = await pool.query("SELECT status, priority, assigned_to FROM tickets"); response.json({ total: rows.length, open: rows.filter((ticket) => ticket.status !== "Resolved").length, urgent: rows.filter((ticket) => ticket.priority === "Critical").length, assigned: rows.filter((ticket) => ticket.assigned_to !== "Unassigned").length, resolved: rows.filter((ticket) => ticket.status === "Resolved").length }); } catch (error) { next(error); } });
+const chatLimiter = rateLimit({ windowMs: 60 * 1000, max: 15 });
+app.post("/api/chat", requireAuth, requireCsrf, chatLimiter, async (request, response) => {
+  const history = cleanChat(request.body.messages);
+  if (!history) return response.status(400).json({ message: "Send alternating user and assistant messages, ending with a user message." });
+  try { response.json(await runChat(pool, request.user, history)); }
+  catch (error) { console.error(error); response.status(502).json({ message: "The assistant could not answer." }); }
+});
+app.get("/api/users", requireAuth, requireTech, async (_request, response, next) => {
+  try {
+    const { rows } = await pool.query("SELECT id, email, role, created_at FROM users ORDER BY id");
+    response.json(rows.map((r) => ({ id: r.id, email: r.email, role: r.role, createdAt: r.created_at })));
+  } catch (error) { next(error); }
+});
+
+app.patch("/api/users/:id/role", requireAuth, requireTech, requireCsrf, async (request, response, next) => {
+  try {
+    const id = Number(request.params.id);
+    const role = request.body.role;
+    if (!Number.isInteger(id) || !["employee", "tech"].includes(role)) return response.status(400).json({ message: "Choose employee or tech." });
+    if (id === request.user.id) return response.status(400).json({ message: "You can't change your own role." });
+    const { rows } = await pool.query("UPDATE users SET role = $1 WHERE id = $2 RETURNING id, email, role", [role, id]);
+    if (!rows[0]) return response.status(404).json({ message: "User not found." });
+    response.json(rows[0]);
+  } catch (error) { next(error); }
+});
+app.get("/api/metrics", requireAuth, async (request, response, next) => {
+  try {
+    const { rows } = request.user.role === "tech"
+      ? await pool.query("SELECT status, priority, assigned_to FROM tickets")
+      : await pool.query("SELECT status, priority, assigned_to FROM tickets WHERE created_by = $1", [request.user.id]);
+    response.json({ total: rows.length, open: rows.filter((t) => t.status !== "Resolved").length, urgent: rows.filter((t) => t.priority === "Critical").length, assigned: rows.filter((t) => t.assigned_to !== "Unassigned").length, resolved: rows.filter((t) => t.status === "Resolved").length });
+  } catch (error) { next(error); }
+});
 
 app.use((error, _request, response, _next) => { console.error(error); response.status(500).json({ message: "Something went wrong." }); });
 await initializeDatabase();

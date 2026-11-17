@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertCircle, ArrowLeft, CheckCircle2, ClipboardList, Filter, Inbox, Laptop, LayoutDashboard, LifeBuoy, LogOut, MessageSquareText, Plus, Search, Settings, ShieldCheck, UserRound, UsersRound, Wrench, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, Bot, CheckCircle2, ClipboardList, Filter, Inbox, Laptop, LayoutDashboard, LifeBuoy, LogOut, MessageSquareText, Plus, Search, Settings, ShieldCheck, UserRound, UsersRound, Wrench, X } from "lucide-react";
 import LoginForm from "./LoginForm";
 import AgentPanel from "./AgentPanel";
+import { AskAgentHome, AgentChat } from "./AskAgent";
 import "./styles.css";
 
 const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -11,6 +12,8 @@ const priorityClass = { Low: "priority-low", Medium: "priority-medium", High: "p
 const statuses = ["New", "In Progress", "Waiting", "Critical", "Resolved"];
 const priorities = ["Low", "Medium", "High", "Critical"];
 const categories = ["Hardware", "Networking", "Cyber", "Techroom", "Pickup", "Access", "Software", "Onboarding"];
+// Screens only technicians can open. The server enforces this too; hiding them here is just for the interface.
+const TECH_ONLY_VIEWS = ["helpdesk", "queue", "users", "assets"];
 const queues = [
   { label: "Open queue", icon: Inbox, filter: (ticket) => ticket.status !== "Resolved" },
   { label: "Closed", icon: CheckCircle2, filter: (ticket) => ticket.status === "Resolved" },
@@ -22,8 +25,11 @@ const queues = [
 
 function App() {
   const [authenticated, setAuthenticated] = useState(false); const [user, setUser] = useState(null); const [csrfToken, setCsrfToken] = useState("");
-  const [authView, setAuthView] = useState("signin"); const [view, setView] = useState("home"); const [tickets, setTickets] = useState([]); const [metrics, setMetrics] = useState(null); const [selectedTicketId, setSelectedTicketId] = useState(null); const [query, setQuery] = useState(""); const [filter, setFilter] = useState("All"); const [notice, setNotice] = useState("");
+  const [authView, setAuthView] = useState("signin"); const [requestedView, setView] = useState("home"); const [tickets, setTickets] = useState([]); const [metrics, setMetrics] = useState(null); const [selectedTicketId, setSelectedTicketId] = useState(null); const [query, setQuery] = useState(""); const [filter, setFilter] = useState("All"); const [notice, setNotice] = useState("");
   const [form, setForm] = useState({ title: "", requester: "", employeeNumber: "", workstationNumber: "", category: "Hardware", priority: "Medium", description: "" });
+
+  const isTech = user?.role === "tech";
+  const view = !isTech && TECH_ONLY_VIEWS.includes(requestedView) ? "home" : requestedView;
 
   async function api(path, options = {}) { const method = (options.method || "GET").toUpperCase(); const response = await fetch(`${apiUrl}${path}`, { ...options, credentials: "include", headers: { "Content-Type": "application/json", ...(method !== "GET" ? { "X-CSRF-Token": csrfToken } : {}), ...(options.headers || {}) } }); const data = await response.json(); if (!response.ok) throw new Error(data.message || "Request failed."); return data; }
   async function loadData() { const [ticketData, metricData] = await Promise.all([api("/api/tickets"), api("/api/metrics")]); setTickets(ticketData); setMetrics(metricData); setSelectedTicketId((current) => current || ticketData[0]?.id || null); }
@@ -33,8 +39,52 @@ function App() {
   async function handleSubmit(event) { event.preventDefault(); try { const created = await api("/api/tickets", { method: "POST", body: JSON.stringify({ ...form, requester: form.requester || user.email }) }); setForm({ title: "", requester: "", employeeNumber: "", workstationNumber: "", category: "Hardware", priority: "Medium", description: "" }); await loadData(); setSelectedTicketId(created.id); setView("ticket"); setNotice("Ticket created successfully."); } catch (error) { setNotice(error.message); } }
   async function updateTicket(changes) { if (!selectedTicket) return; try { const updated = await api(`/api/tickets/${selectedTicket.id}`, { method: "PATCH", body: JSON.stringify(changes) }); setTickets((current) => current.map((ticket) => ticket.id === updated.id ? updated : ticket)); setNotice("Ticket updated."); } catch (error) { setNotice(error.message); } }
   async function signOut() { try { await api("/api/auth/signout", { method: "POST" }); } catch {} setAuthenticated(false); setUser(null); setTickets([]); setView("home"); }
+  const openTicket = (id) => { setSelectedTicketId(id); setView("ticket"); };
+
   if (!authenticated || !user) return <AuthScreen apiUrl={apiUrl} csrfToken={csrfToken} setCsrfToken={setCsrfToken} view={authView} setView={setAuthView} notice={notice} setNotice={setNotice} onAuth={handleAuth} onLogin={(nextUser) => { setUser(nextUser); setAuthenticated(true); }} />;
-  return <div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark"><ShieldCheck size={22} /></div><div><strong>IT Desk</strong><span>Support Console</span></div></div><p className="nav-label">Workspace</p><nav className="nav-list"><NavButton icon={LayoutDashboard} label="My Service Desk" active={view === "home"} onClick={() => setView("home")} /><NavButton icon={Plus} label="New Request" active={view === "create"} onClick={() => setView("create")} /><NavButton icon={ClipboardList} label="Help Desk" active={view === "helpdesk" || view === "queue"} onClick={() => setView("helpdesk")} /><NavButton icon={UsersRound} label="Users" active={view === "users"} onClick={() => setView("users")} /><NavButton icon={Laptop} label="Assets" active={view === "assets"} onClick={() => setView("assets")} /></nav><p className="nav-label">Account</p><nav className="nav-list"><NavButton icon={Settings} label="Settings" active={view === "settings"} onClick={() => setView("settings")} /></nav><div className="sidebar-card"><AlertCircle size={20} /><strong>{metrics?.urgent || 0} critical</strong><span>Tickets need immediate attention.</span></div></aside><main className="workspace"><header className="topbar"><div><p>Service operations</p><h1>{pageTitle(view)}</h1></div><div className="topbar-actions"><label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickets" /></label><button className="profile-button" onClick={() => setView("settings")}><UserRound size={18} /><span>{user.email}</span></button></div></header>{notice && <div className="notice" role="status"><span>{notice}</span><button aria-label="Dismiss notification" onClick={() => setNotice("")}><X size={16} /></button></div>}{view === "ticket" && selectedTicket ? <TicketDetail api={api} ticket={selectedTicket} onBack={() => setView("helpdesk")} onUpdate={updateTicket} /> : null}{view === "home" ? <EmployeeHome tickets={tickets} onCreate={() => setView("create")} onOpen={(id) => { setSelectedTicketId(id); setView("ticket"); }} /> : null}{view === "create" ? <CreateTicket form={form} setForm={setForm} handleSubmit={handleSubmit} onCancel={() => setView("home")} /> : null}{view === "helpdesk" ? <HelpDesk tickets={tickets} metrics={metrics} query={query} filter={filter} setFilter={setFilter} onOpen={(id) => { setSelectedTicketId(id); setView("ticket"); }} onQueue={(next) => setView(next)} /> : null}{view === "queue" ? <QueueView tickets={tickets} query={query} queue={queues.find((item) => item.label === filter) || queues[0]} onBack={() => setView("helpdesk")} onOpen={(id) => { setSelectedTicketId(id); setView("ticket"); }} /> : null}{["users", "assets", "settings"].includes(view) ? <InfoPage view={view} user={user} signOut={signOut} tickets={tickets} /> : null}</main></div>;
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand"><div className="brand-mark"><ShieldCheck size={22} /></div><div><strong>IT Desk</strong><span>Support Console</span></div></div>
+        <p className="nav-label">Workspace</p>
+        <nav className="nav-list">
+          <NavButton icon={LayoutDashboard} label="My Service Desk" active={view === "home"} onClick={() => setView("home")} />
+          <NavButton icon={Bot} label="Ask the Agent" active={view === "ask" || view === "chat" || (view === "create" && !isTech)} onClick={() => setView("ask")} />
+          {isTech && (
+            <>
+              <NavButton icon={Plus} label="New Request" active={view === "create"} onClick={() => setView("create")} />
+              <NavButton icon={ClipboardList} label="Help Desk" active={view === "helpdesk" || view === "queue"} onClick={() => setView("helpdesk")} />
+              <NavButton icon={UsersRound} label="Users" active={view === "users"} onClick={() => setView("users")} />
+              <NavButton icon={Laptop} label="Assets" active={view === "assets"} onClick={() => setView("assets")} />
+            </>
+          )}
+        </nav>
+        <p className="nav-label">Account</p>
+        <nav className="nav-list"><NavButton icon={Settings} label="Settings" active={view === "settings"} onClick={() => setView("settings")} /></nav>
+        {isTech && <div className="sidebar-card"><AlertCircle size={20} /><strong>{metrics?.urgent || 0} critical</strong><span>Tickets need immediate attention.</span></div>}
+      </aside>
+      <main className="workspace">
+        <header className="topbar">
+          <div><p>Service operations</p><h1>{pageTitle(view)}</h1></div>
+          <div className="topbar-actions">
+            <label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickets" /></label>
+            <button className="profile-button" onClick={() => setView("settings")}><UserRound size={18} /><span>{user.email}</span></button>
+          </div>
+        </header>
+        {notice && <div className="notice" role="status"><span>{notice}</span><button aria-label="Dismiss notification" onClick={() => setNotice("")}><X size={16} /></button></div>}
+        {view === "ticket" && selectedTicket ? <TicketDetail api={api} ticket={selectedTicket} isTech={isTech} onBack={() => setView(isTech ? "helpdesk" : "home")} onUpdate={updateTicket} /> : null}
+        {view === "home" ? <EmployeeHome tickets={tickets} isTech={isTech} onCreate={() => setView("ask")} onOpen={openTicket} /> : null}
+        {view === "ask" ? <AskAgentHome onChat={() => setView("chat")} onTicket={() => setView("create")} /> : null}
+        {view === "chat" ? <AgentChat api={api} onBack={() => setView("ask")} onTicket={() => setView("create")} onReply={loadData} /> : null}
+        {view === "create" ? <CreateTicket form={form} setForm={setForm} handleSubmit={handleSubmit} onCancel={() => setView(isTech ? "home" : "ask")} /> : null}
+        {view === "helpdesk" ? <HelpDesk tickets={tickets} metrics={metrics} query={query} filter={filter} setFilter={setFilter} onOpen={openTicket} onQueue={(next) => setView(next)} /> : null}
+        {view === "queue" ? <QueueView tickets={tickets} query={query} queue={queues.find((item) => item.label === filter) || queues[0]} onBack={() => setView("helpdesk")} onOpen={openTicket} /> : null}
+        {view === "users" ? <UsersAdmin api={api} currentUser={user} setNotice={setNotice} /> : null}
+        {["assets", "settings"].includes(view) ? <InfoPage view={view} user={user} signOut={signOut} tickets={tickets} /> : null}
+      </main>
+    </div>
+  );
 }
 
 function NavButton({ icon: Icon, label, active, onClick }) { return <button className={active ? "nav-item active" : "nav-item"} onClick={onClick}><Icon size={18} /><span>{label}</span></button>; }
@@ -49,18 +99,94 @@ function AuthScreen({ apiUrl, csrfToken, setCsrfToken, view, setView, notice, se
   return <main className="auth-shell"><section className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><ShieldCheck size={22} /></div><div><strong>IT Desk</strong><span>Support Console</span></div></div><p className="eyebrow">Secure service access</p><h1>{isReset ? "Set a new password" : isForgot ? "Reset your password" : view === "signup" ? "Create your account" : "Welcome back"}</h1><p className="auth-copy">Submit requests, follow progress, and keep your work moving.</p>{notice && <div className="notice">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss notification"><X size={16} /></button></div>}{view === "signin" ? <LoginForm apiUrl={apiUrl} csrfToken={csrfToken} onSuccess={onLogin} /> : <form className="auth-form" onSubmit={isReset ? reset : isForgot ? forgot : submit}>{!isReset && <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={20} required placeholder="you@company.com" /></label>}{isReset && <label>Reset code<input value={resetToken} onChange={(event) => setResetToken(event.target.value)} required placeholder="Paste your reset code" /></label>}{!isForgot && <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={12} pattern="[A-Za-z0-9!@#$%^&*]+" required placeholder="8-12 allowed characters" /></label>}<button className="primary-button" disabled={busy}>{busy ? "Working..." : isReset ? "Update password" : isForgot ? "Send reset instructions" : "Create account"}</button></form>}<div className="auth-links">{view === "signin" && <button onClick={() => setView("forgot")}>Forgot password?</button>}{view === "signin" ? <button onClick={() => setView("signup")}>Create an account</button> : <button onClick={() => setView("signin")}>Back to sign in</button>}</div></section></main>;
 }
 
-function EmployeeHome({ tickets, onCreate, onOpen }) { return <section className="page-stack"><div className="welcome-band"><div><p className="eyebrow">Employee service desk</p><h2>How can we help today?</h2><p>Open a request or check the status of an existing issue.</p></div><button className="primary-button compact" onClick={onCreate}><Plus size={17} /> New request</button></div><div className="section-heading"><div><h2>Recent requests</h2><p>{tickets.length} requests in the shared service queue</p></div></div><TicketTable tickets={tickets.slice(0, 5)} onOpen={onOpen} empty="No requests have been submitted yet." /></section>; }
+function EmployeeHome({ tickets, isTech, onCreate, onOpen }) {
+  const countText = isTech ? `${tickets.length} requests in the shared service queue` : `${tickets.length} ${tickets.length === 1 ? "request" : "requests"} from you`;
+  return <section className="page-stack"><div className="welcome-band"><div><p className="eyebrow">Employee service desk</p><h2>How can we help today?</h2><p>Open a request or check the status of an existing issue.</p></div><button className="primary-button compact" onClick={onCreate}><Plus size={17} /> New request</button></div><div className="section-heading"><div><h2>Recent requests</h2><p>{countText}</p></div></div><TicketTable tickets={tickets.slice(0, 5)} onOpen={onOpen} empty="No requests have been submitted yet." /></section>;
+}
 function CreateTicket({ form, setForm, handleSubmit, onCancel }) { const update = (key, value) => setForm({ ...form, [key]: value }); return <section className="form-page"><div className="section-heading"><div><p className="eyebrow">Self service</p><h2>New support request</h2><p>Give the help desk enough detail to route this quickly.</p></div><button className="secondary-button" onClick={onCancel}><ArrowLeft size={16} /> Cancel</button></div><form className="ticket-form large" onSubmit={handleSubmit}><label>Issue title<input value={form.title} onChange={(event) => update("title", event.target.value)} placeholder="Briefly describe the issue" required /></label><label>Requester name<input value={form.requester} onChange={(event) => update("requester", event.target.value)} placeholder="Your name" /></label><label>Employee number<input value={form.employeeNumber} onChange={(event) => update("employeeNumber", event.target.value)} placeholder="EMP-0000" required /></label><label>Workstation number<input value={form.workstationNumber} onChange={(event) => update("workstationNumber", event.target.value)} placeholder="WS-000" required /></label><label>Queue<select value={form.category} onChange={(event) => update("category", event.target.value)}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label><label>Priority<select value={form.priority} onChange={(event) => update("priority", event.target.value)}>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select></label><label className="wide">Description<textarea value={form.description} onChange={(event) => update("description", event.target.value)} placeholder="What happened? Include error messages or troubleshooting already attempted." required /></label><div className="form-actions wide"><button className="primary-button" type="submit"><Plus size={17} /> Submit request</button></div></form></section>; }
 
 function HelpDesk({ tickets, metrics, query, filter, setFilter, onOpen, onQueue }) { const filtered = tickets.filter((ticket) => { const filterMatches = filter === "All" || (filter === "Critical" ? ticket.priority === "Critical" : ticket.status === filter); return matches(ticket, query) && filterMatches; }); return <section className="page-stack"><div className="desk-hero"><div><p className="eyebrow">IT operations</p><h2>Help desk workspace</h2><p>Monitor queues, triage incoming work, and keep every request moving.</p></div><button className="secondary-button" onClick={() => setFilter(filter === "Critical" ? "All" : "Critical")}><Filter size={16} /> {filter === "Critical" ? "All tickets" : "Critical only"}</button></div><section className="metrics-grid"><Metric label="Open tickets" value={metrics?.open ?? "-"} icon={Inbox} tone="blue" /><Metric label="Critical" value={metrics?.urgent ?? "-"} icon={AlertCircle} tone="red" /><Metric label="Assigned" value={metrics?.assigned ?? "-"} icon={UsersRound} tone="green" /><Metric label="Resolved" value={metrics?.resolved ?? "-"} icon={CheckCircle2} tone="purple" /></section><div className="queue-grid">{queues.map((queue) => { const count = tickets.filter(queue.filter).length; const Icon = queue.icon; return <button className="queue-tile" key={queue.label} onClick={() => { setFilter(queue.label); onQueue("queue"); }}><span className="queue-icon"><Icon size={19} /></span><span><strong>{queue.label}</strong><small>{count} tickets</small></span><ArrowLeft size={16} className="queue-arrow" /></button>; })}</div><section className="table-section"><div className="section-header"><div><h2>All work</h2><p>{filtered.length} tickets match the current filters</p></div><select value={filter === "Critical" || statuses.includes(filter) || filter === "All" ? filter : "All"} onChange={(event) => setFilter(event.target.value)}><option>All</option>{statuses.map((status) => <option key={status}>{status}</option>)}</select></div><TicketTable tickets={filtered} onOpen={onOpen} empty="No tickets match the current filters." /></section></section>; }
 function QueueView({ tickets, query, queue, onBack, onOpen }) { const queueTickets = tickets.filter((ticket) => queue.filter(ticket) && matches(ticket, query)); return <section className="page-stack"><button className="back-button" onClick={onBack}><ArrowLeft size={17} /> Back to help desk</button><div className="section-heading"><div><p className="eyebrow">Queue</p><h2>{queue.label}</h2><p>{queueTickets.length} tickets in this workstream.</p></div></div><section className="table-section"><TicketTable tickets={queueTickets} onOpen={onOpen} empty="This queue is clear." /></section></section>; }
 function TicketTable({ tickets, onOpen, empty }) { return <div className="ticket-table">{tickets.length ? tickets.map((ticket) => <button className="ticket-row" key={ticket.id} onClick={() => onOpen(ticket.id)}><span className="ticket-main"><strong>{ticket.title}</strong><small>{ticket.ticketNumber} · {ticket.requester} · {ticket.category}</small></span><span className={`pill ${statusClass[ticket.status] || ""}`}>{ticket.status}</span><span className={`priority ${priorityClass[ticket.priority] || ""}`}>{ticket.priority}</span><span className="assigned">{ticket.assignedTo}</span></button>) : <div className="empty-state"><ClipboardList size={25} /><p>{empty}</p></div>}</div>; }
 
-function TicketDetail({ api, ticket, onBack, onUpdate }) { const [comments, setComments] = useState([]); const [comment, setComment] = useState(""); const [busy, setBusy] = useState(false); useEffect(() => { api(`/api/tickets/${ticket.id}/comments`).then(setComments).catch(() => setComments([])); }, [ticket.id]); async function addComment(event) { event.preventDefault(); if (!comment.trim()) return; setBusy(true); try { const created = await api(`/api/tickets/${ticket.id}/comments`, { method: "POST", body: JSON.stringify({ body: comment }) }); setComments((current) => [...current, created]); setComment(""); } finally { setBusy(false); } } return <section className="ticket-detail-page"><button className="back-button" onClick={onBack}><ArrowLeft size={18} /> Back to help desk</button><div className="detail-page-header"><div><p className="eyebrow">{ticket.ticketNumber}</p><h2>{ticket.title}</h2><p className="ticket-number">Created {formatDate(ticket.createdAt)} · Updated {formatDate(ticket.updatedAt)}</p></div><div className="detail-header"><span className={`pill ${statusClass[ticket.status] || ""}`}>{ticket.status}</span><span className={`priority ${priorityClass[ticket.priority] || ""}`}>{ticket.priority}</span></div></div><div className="detail-page-grid"><article className="detail-page-main"><h3>Issue description</h3><p className="description">{ticket.description}</p><div className="activity-header"><h3>Activity and comments</h3><span>{comments.length} updates</span></div><div className="comment-list">{comments.length ? comments.map((item) => <div className="comment" key={item.id}><div className="comment-avatar">{item.author.slice(0, 1).toUpperCase()}</div><div><strong>{item.author}</strong><small>{formatDate(item.createdAt)}</small><p>{item.body}</p></div></div>) : <div className="empty-state compact-empty"><MessageSquareText size={22} /><p>No comments yet.</p></div>}</div><form className="comment-form" onSubmit={addComment}><textarea value={comment} onChange={(event) => setComment(event.target.value)} maxLength={2000} placeholder="Add a progress update or question..." /><button className="primary-button" disabled={busy}><MessageSquareText size={17} /> Add comment</button></form><AgentPanel key={ticket.id} api={api} ticketId={ticket.id} onUseAsComment={setComment} /></article><aside className="detail-page-side"><h3>Ticket information</h3><dl className="detail-list"><div><dt>Requester</dt><dd>{ticket.requester}</dd></div><div><dt>Employee number</dt><dd>{ticket.employeeNumber || "Not provided"}</dd></div><div><dt>Workstation</dt><dd>{ticket.workstationNumber || "Not provided"}</dd></div><div><dt>Queue</dt><dd>{ticket.category}</dd></div><div><dt>Due</dt><dd>{formatDate(ticket.dueAt)}</dd></div></dl><label className="field-label">Status<select value={ticket.status} onChange={(event) => onUpdate({ status: event.target.value })}>{statuses.map((status) => <option key={status}>{status}</option>)}</select></label><label className="field-label">Priority<select value={ticket.priority} onChange={(event) => onUpdate({ priority: event.target.value })}>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select></label><label className="field-label">Assigned technician<input value={ticket.assignedTo} onChange={(event) => onUpdate({ assignedTo: event.target.value })} onBlur={(event) => onUpdate({ assignedTo: event.target.value })} /></label></aside></div></section>; }
+function TicketDetail({ api, ticket, isTech, onBack, onUpdate }) {
+  const [comments, setComments] = useState([]); const [comment, setComment] = useState(""); const [busy, setBusy] = useState(false);
+  useEffect(() => { api(`/api/tickets/${ticket.id}/comments`).then(setComments).catch(() => setComments([])); }, [ticket.id]);
+  async function addComment(event) { event.preventDefault(); if (!comment.trim()) return; setBusy(true); try { const created = await api(`/api/tickets/${ticket.id}/comments`, { method: "POST", body: JSON.stringify({ body: comment }) }); setComments((current) => [...current, created]); setComment(""); } finally { setBusy(false); } }
+  return (
+    <section className="ticket-detail-page">
+      <button className="back-button" onClick={onBack}><ArrowLeft size={18} /> {isTech ? "Back to help desk" : "Back to my requests"}</button>
+      <div className="detail-page-header">
+        <div><p className="eyebrow">{ticket.ticketNumber}</p><h2>{ticket.title}</h2><p className="ticket-number">Created {formatDate(ticket.createdAt)} · Updated {formatDate(ticket.updatedAt)}</p></div>
+        <div className="detail-header"><span className={`pill ${statusClass[ticket.status] || ""}`}>{ticket.status}</span><span className={`priority ${priorityClass[ticket.priority] || ""}`}>{ticket.priority}</span></div>
+      </div>
+      <div className="detail-page-grid">
+        <article className="detail-page-main">
+          <h3>Issue description</h3><p className="description">{ticket.description}</p>
+          <div className="activity-header"><h3>Activity and comments</h3><span>{comments.length} updates</span></div>
+          <div className="comment-list">{comments.length ? comments.map((item) => <div className="comment" key={item.id}><div className="comment-avatar">{item.author.slice(0, 1).toUpperCase()}</div><div><strong>{item.author}</strong><small>{formatDate(item.createdAt)}</small><p>{item.body}</p></div></div>) : <div className="empty-state compact-empty"><MessageSquareText size={22} /><p>No comments yet.</p></div>}</div>
+          <form className="comment-form" onSubmit={addComment}><textarea value={comment} onChange={(event) => setComment(event.target.value)} maxLength={2000} placeholder="Add a progress update or question..." /><button className="primary-button" disabled={busy}><MessageSquareText size={17} /> Add comment</button></form>
+          {isTech && <AgentPanel key={ticket.id} api={api} ticketId={ticket.id} onUseAsComment={setComment} />}
+        </article>
+        <aside className="detail-page-side">
+          <h3>Ticket information</h3>
+          <dl className="detail-list">
+            <div><dt>Requester</dt><dd>{ticket.requester}</dd></div>
+            <div><dt>Employee number</dt><dd>{ticket.employeeNumber || "Not provided"}</dd></div>
+            <div><dt>Workstation</dt><dd>{ticket.workstationNumber || "Not provided"}</dd></div>
+            <div><dt>Queue</dt><dd>{ticket.category}</dd></div>
+            <div><dt>Due</dt><dd>{formatDate(ticket.dueAt)}</dd></div>
+            {!isTech && <div><dt>Assigned to</dt><dd>{ticket.assignedTo}</dd></div>}
+          </dl>
+          {isTech && (
+            <>
+              <label className="field-label">Status<select value={ticket.status} onChange={(event) => onUpdate({ status: event.target.value })}>{statuses.map((status) => <option key={status}>{status}</option>)}</select></label>
+              <label className="field-label">Priority<select value={ticket.priority} onChange={(event) => onUpdate({ priority: event.target.value })}>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
+              <label className="field-label">Assigned technician<input value={ticket.assignedTo} onChange={(event) => onUpdate({ assignedTo: event.target.value })} onBlur={(event) => onUpdate({ assignedTo: event.target.value })} /></label>
+            </>
+          )}
+        </aside>
+      </div>
+    </section>
+  );
+}
 
-function InfoPage({ view, user, signOut, tickets }) { const content = { users: [UsersRound, "User directory", "Account and role management is ready for the next admin workflow.", ["Employees", "Technicians", "Administrators"]], assets: [Laptop, "Asset register", "Workstations and equipment connect to tickets through employee and workstation numbers.", [`${new Set(tickets.map((ticket) => ticket.workstationNumber).filter(Boolean)).size} workstations referenced`, "Docking stations", "Printers"]], settings: [Settings, "Account settings", "Review your signed-in account and session controls.", [user.email, `Role: ${user.role}`, "Session protected"]] }[view]; const [Icon, title, copy, rows] = content; return <section className="info-page"><div className="info-icon"><Icon size={28} /></div><p className="eyebrow">Workspace</p><h2>{title}</h2><p className="description">{copy}</p><div className="info-list">{rows.map((row) => <div key={row}><strong>{row}</strong><span>Active</span></div>)}</div>{view === "settings" && <button className="secondary-button" onClick={signOut}><LogOut size={17} /> Sign out</button>}</section>; }
+function UsersAdmin({ api, currentUser, setNotice }) {
+  const [users, setUsers] = useState([]); const [loading, setLoading] = useState(true); const [busyId, setBusyId] = useState(null);
+  useEffect(() => { api("/api/users").then(setUsers).catch((error) => setNotice(error.message)).finally(() => setLoading(false)); }, []);
+  async function changeRole(target, role) {
+    const question = role === "tech" ? `Give ${target.email} technician access? They will be able to see and manage every ticket and user.` : `Remove technician access for ${target.email}?`;
+    if (!window.confirm(question)) return;
+    setBusyId(target.id);
+    try {
+      const updated = await api(`/api/users/${target.id}/role`, { method: "PATCH", body: JSON.stringify({ role }) });
+      setUsers((current) => current.map((item) => item.id === updated.id ? { ...item, role: updated.role } : item));
+      setNotice(`${updated.email} is now ${updated.role === "tech" ? "a technician" : "an employee"}.`);
+    } catch (error) { setNotice(error.message); }
+    setBusyId(null);
+  }
+  return (
+    <section className="page-stack">
+      <div className="section-heading"><div><p className="eyebrow">Administration</p><h2>User directory</h2><p>{users.length} accounts. Technicians can manage every ticket and every user.</p></div></div>
+      <section className="table-section">
+        <div className="ticket-table">
+          {loading ? <div className="empty-state"><p>Loading users...</p></div> : users.length ? users.map((item) => (
+            <div className="ticket-row" key={item.id}>
+              <span className="ticket-main"><strong>{item.email}</strong><small>Joined {formatDate(item.createdAt)}</small></span>
+              <span className={`pill ${item.role === "tech" ? "status-green" : "status-blue"}`}>{item.role === "tech" ? "Technician" : "Employee"}</span>
+              <span className="assigned">{item.id === currentUser.id ? "You" : ""}</span>
+              {item.id === currentUser.id ? <span /> : <button className="secondary-button" disabled={busyId === item.id} onClick={() => changeRole(item, item.role === "tech" ? "employee" : "tech")}>{item.role === "tech" ? "Remove tech access" : "Make technician"}</button>}
+            </div>
+          )) : <div className="empty-state"><p>No users found.</p></div>}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function InfoPage({ view, user, signOut, tickets }) { const content = { assets: [Laptop, "Asset register", "Workstations and equipment connect to tickets through employee and workstation numbers.", [`${new Set(tickets.map((ticket) => ticket.workstationNumber).filter(Boolean)).size} workstations referenced`, "Docking stations", "Printers"]], settings: [Settings, "Account settings", "Review your signed-in account and session controls.", [user.email, `Role: ${user.role}`, "Session protected"]] }[view]; const [Icon, title, copy, rows] = content; return <section className="info-page"><div className="info-icon"><Icon size={28} /></div><p className="eyebrow">Workspace</p><h2>{title}</h2><p className="description">{copy}</p><div className="info-list">{rows.map((row) => <div key={row}><strong>{row}</strong><span>Active</span></div>)}</div>{view === "settings" && <button className="secondary-button" onClick={signOut}><LogOut size={17} /> Sign out</button>}</section>; }
 function Metric({ label, value, icon: Icon, tone }) { return <article className={`metric-card ${tone}`}><div><span>{label}</span><strong>{value}</strong></div><Icon size={24} /></article>; }
 function matches(ticket, query) { return [ticket.title, ticket.requester, ticket.category, ticket.ticketNumber, ticket.employeeNumber, ticket.workstationNumber, ticket.assignedTo].join(" ").toLowerCase().includes(query.toLowerCase()); }
-function pageTitle(view) { return { home: "My Service Desk", create: "New Request", helpdesk: "Help Desk", queue: "Queue", ticket: "Ticket Details", users: "User Directory", assets: "Asset Register", settings: "Settings" }[view] || "My Service Desk"; }
+function pageTitle(view) { return { home: "My Service Desk", ask: "Ask the Agent", chat: "Ask the Agent", create: "New Request", helpdesk: "Help Desk", queue: "Queue", ticket: "Ticket Details", users: "User Directory", assets: "Asset Register", settings: "Settings" }[view] || "My Service Desk"; }
 function formatDate(date) { if (!date) return "Not set"; return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(date)); }
 createRoot(document.getElementById("root")).render(<App />);

@@ -1,8 +1,22 @@
 # IT Ticketing System
 
-A Dockerized capstone project for an internal IT helpdesk ticketing system.
+A Dockerized capstone project for an internal IT helpdesk ticketing system with an AI agent. Employees get a simple self-service front door (including an AI troubleshooting chat), and technicians get the full help desk console.
 
 ## Run the app
+
+1. Copy the example settings file and fill it in:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Purpose |
+| --- | --- |
+| `PUBLIC_IP` | Address the browser uses to reach the app (`localhost` locally, or the server's Elastic IP when deployed) |
+| `POSTGRES_PASSWORD` | Database password |
+| `SESSION_SECRET` | Long random string used to sign login sessions |
+
+2. Start everything:
 
 ```bash
 ./start.sh
@@ -14,11 +28,15 @@ Or run Docker Compose directly:
 docker compose up --build
 ```
 
-## Local URLs
+The `.env` file is ignored by git and must never be committed. Each environment keeps its own copy.
 
-- Frontend: http://localhost:5173
-- Backend API: http://localhost:4000/api
+## URLs
+
+- Frontend: http://localhost:5173 (deployed: `http://<server-ip>:5173`)
+- Backend API: http://localhost:4000/api (deployed: `http://<server-ip>:4000/api`)
 - Health check: http://localhost:4000/health
+
+When deployed on AWS EC2, the security group must allow inbound TCP 5173 and 4000.
 
 ## Stack
 
@@ -26,49 +44,43 @@ docker compose up --build
 - Express API backend
 - PostgreSQL database
 - Docker Compose orchestration
+- AI agent powered by Claude on Amazon Bedrock (mock mode for local development)
+- Hosted on AWS EC2
+
+## Roles
+
+- **Employee** (default for every new account): My Service Desk and Ask the Agent. Employees see only their own tickets.
+- **Technician (`tech`)**: everything employees have, plus New Request, Help Desk, Users, and Assets. Technicians see all tickets and can manage users.
+
+New accounts are always created as employees. A technician promotes or demotes other accounts from the **Users** page. A technician cannot change their own role, so the last technician can't be locked out by accident.
+
+To create the very first technician, promote an account directly in the database:
+
+```bash
+docker compose exec db psql -U ticket_admin -d tickets -c "UPDATE users SET role = 'tech' WHERE email = 'you@example.com';"
+```
 
 ## Current features
 
-- Employee service desk with a simple home view for opening and tracking requests
+- Employee service desk showing the signed-in user's own requests
+- **Ask the Agent**: employees choose between an AI troubleshooting chat or submitting a ticket directly
+- AI chat that searches past resolved tickets for fixes, shows the user's own tickets, and can open a ticket after confirming the details with the user
 - New request form with title, requester, employee number, workstation number, queue, priority, and description
-- IT help desk workspace organized around Open queue, Closed, Networking, Cyber, Techroom, and Pickup
+- IT help desk workspace (technicians) organized around Open queue, Closed, Networking, Cyber, Techroom, and Pickup
 - Searchable help desk ticket table with status and critical-ticket filters
-- Ticket metrics for open, critical, assigned, and resolved work
-- Full-screen ticket detail view with requester, workstation, queue, due date, status, priority, and assignment controls
+- Ticket metrics for open, critical, assigned, and resolved work (employees see counts for their own tickets only)
+- Full-screen ticket detail view with requester, workstation, queue, due date, and comments; status, priority, and assignment controls are technician-only
+- Technician AI agent panel on each ticket that searches similar past tickets and suggests next steps
 - Ticket comments/activity timeline stored in PostgreSQL
-- Working navigation pages for users, assets, settings, employee requests, and help desk operations
-- Seeded sample ticket data for local development
+- Users page (technicians): view all accounts and promote or demote technicians
+- Settings page with sign out; Assets page is currently a placeholder
+- Seeded sample tickets and demo resolved tickets for local development
 
-## Security features
+## AI agent
 
-- Bcrypt password hashing with a work factor of 12
-- Email validation, 20-character email limit, and password rules enforced on both client and server
-- New and reset passwords require 8-12 characters and allow only letters, numbers, and `! @ # $ % ^ & *`
-- Parameterized PostgreSQL queries to reduce SQL injection risk
-- `express-session` sessions stored in PostgreSQL rather than process memory
-- `httpOnly`, `sameSite=lax`, production `secure`, and eight-hour session cookies
-- Session-bound CSRF tokens required for state-changing requests
-- Helmet security headers
-- CORS restricted to the configured frontend origin
-- Login and signup rate limiting of 10 attempts per 15 minutes
-- 100 KB JSON request-body limit
-- Random, 15-minute password reset tokens
-- Generic login failure messages and non-enumerating forgot-password responses
-- Authentication required for ticket, metric, comment, and session endpoints
-- Input validation for required ticket fields and comment length
-- Generic server error responses that avoid exposing internal details
+The agent runs in one of two modes, set by the `AI_PROVIDER` environment variable on the API service:
 
-## Authentication notes
+- `mock` (default): no AI model needed. The chat reads back matching fixes from resolved tickets, which is useful for local development and testing.
+- `bedrock`: uses Claude on Amazon Bedrock through the server's IAM role (no API key stored). Requires Bedrock model access enabled in the AWS account and an IAM role on the server that is allowed to call Bedrock. `AWS_REGION` and `BEDROCK_MODEL_ID` can be set to override the defaults.
 
-Ticket and metric endpoints require a signed-in user. The forgot-password flow returns a reset code in the local development response because this capstone project does not yet send email. In a production deployment, that code should be delivered through a verified email provider instead. Set a strong, private `SESSION_SECRET` and run behind HTTPS with `NODE_ENV=production` before deploying publicly.
-
-## Data model
-
-The API creates these PostgreSQL tables on startup:
-
-- `users`: account email, bcrypt password hash, role, and creation time
-- `tickets`: request details, queue/category, status, priority, requester, employee/workstation numbers, assignment, due date, and timestamps
-- `ticket_comments`: ticket activity, author, comment body, and timestamp
-- `user_sessions`: PostgreSQL-backed login sessions created by `connect-pg-simple`
-
-Ticket data is persisted in the Docker volume `ticket_db_data`. The local application does not impose a fixed ticket count; practical capacity depends on the disk and resources available to Docker/PostgreSQL.
+The employee chat
